@@ -1513,6 +1513,12 @@ function requireVersion(request: NormalizedActionRequest): string {
   return request.version;
 }
 
+function requestsBuildAttachment(request: NormalizedActionRequest): boolean {
+  return /\battach\b.*\b(testflight|build)\b|\bassociate\b.*\b(testflight|build)\b|TestFlight.*(添付|追加|関連付け)|ビルド.*(添付|追加|関連付け)/i.test(
+    request.rawCommand
+  );
+}
+
 function ensureWriteAction(
   request: NormalizedActionRequest,
   plan: ProviderExecutionPlan
@@ -2403,17 +2409,52 @@ export class AppleAscProvider implements ProviderAdapter {
       app.platform
     );
 
-    const validation = await readProcessOutput(
-      this.binaryPath,
-      buildValidateArgs(app.appId, resolvedVersion.versionId, app.platform),
-      this.env
-    );
+    const shouldAttachLatestBuild =
+      request.actionType === "submit_release_for_review" &&
+      requestsBuildAttachment(request);
+    let versionDetails: AscCommandResult | null = null;
+    let attachedBuildId: string | null = null;
+
+    if (shouldAttachLatestBuild) {
+      versionDetails = await readVersionDetailsOutput(
+        this.binaryPath,
+        resolvedVersion.versionId,
+        this.env
+      );
+      attachedBuildId = extractAttachedBuildId(versionDetails.json);
+    }
+
+    const validation =
+      shouldAttachLatestBuild && attachedBuildId !== buildId
+        ? null
+        : await readProcessOutput(
+            this.binaryPath,
+            buildValidateArgs(app.appId, resolvedVersion.versionId, app.platform),
+            this.env
+          );
 
     const previewCommands = [
       latestBuild.displayCommand,
-      versionLookup.displayCommand,
-      validation.displayCommand
+      versionLookup.displayCommand
     ];
+    if (versionDetails) {
+      previewCommands.push(versionDetails.displayCommand);
+    }
+    if (shouldAttachLatestBuild && attachedBuildId !== buildId) {
+      previewCommands.push(
+        buildDisplayCommand(
+          this.binaryPath,
+          buildAttachBuildArgs(resolvedVersion.versionId, buildId)
+        )
+      );
+    }
+    previewCommands.push(
+      validation?.displayCommand ??
+        buildDisplayCommand(
+          this.binaryPath,
+          buildValidateArgs(app.appId, resolvedVersion.versionId, app.platform)
+        )
+    );
 
     if (request.actionType === "submit_release_for_review") {
       previewCommands.push(
@@ -2437,19 +2478,29 @@ export class AppleAscProvider implements ProviderAdapter {
       buildId,
       buildNumber,
       previewCommands,
-      validationSummary: summarizeValidation(validation.json),
+      validationSummary: validation
+        ? summarizeValidation(validation.json)
+        : [
+            `Will attach build ${buildNumber} (${buildId}).`,
+            "Full App Store validation will run during execution after build attachment.",
+            "Existing release notes will not be changed."
+          ],
       executionSummary:
         request.actionType === "resolve_latest_build"
           ? `Resolved latest build ${buildNumber} (${buildId}) for version ${version}.`
           : request.actionType === "validate_release"
             ? `Validated version ${version} with build ${buildNumber} (${buildId}).`
-            : `Prepared App Store submission for version ${version} build ${buildNumber} (${buildId}).`,
+            : shouldAttachLatestBuild
+              ? `Prepared App Store submission for version ${version} build ${buildNumber} (${buildId}) without changing release notes.`
+              : `Prepared App Store submission for version ${version} build ${buildNumber} (${buildId}).`,
       rawProviderData: {
         latestBuild: latestBuild.json,
         versionLookup: versionLookup.json,
         versionId: resolvedVersion.versionId,
         versionState: resolvedVersion.appStoreState,
-        validation: validation.json
+        versionDetails: versionDetails?.json,
+        attachedBuildId,
+        ...(validation ? { validation: validation.json } : {})
       }
     });
   }
@@ -2771,19 +2822,50 @@ export class AppleAscProvider implements ProviderAdapter {
       });
     }
 
+    const versionLookup = await lookupAppStoreVersion({
+      binaryPath: this.binaryPath,
+      appId: context.app.appId,
+      version,
+      platform: context.app.platform,
+      env: this.env
+    });
     const resolvedVersion = requireAppStoreVersionRecord(
-      (
-        await lookupAppStoreVersion({
-          binaryPath: this.binaryPath,
-          appId: context.app.appId,
-          version,
-          platform: context.app.platform,
-          env: this.env
-        })
-      ).versionRecord,
+      versionLookup.versionRecord,
       version,
       context.app.platform
     );
+    let versionDetails: AscCommandResult | null = null;
+    let attachBuild: AscCommandResult | null = null;
+    let validation: AscCommandResult | null = null;
+
+    if (
+      context.request.actionType === "submit_release_for_review" &&
+      requestsBuildAttachment(context.request)
+    ) {
+      versionDetails = await readVersionDetailsOutput(
+        this.binaryPath,
+        resolvedVersion.versionId,
+        this.env
+      );
+      const attachedBuildId = extractAttachedBuildId(versionDetails.json);
+      if (attachedBuildId !== buildId) {
+        attachBuild = await readProcessOutput(
+          this.binaryPath,
+          buildAttachBuildArgs(resolvedVersion.versionId, buildId),
+          this.env
+        );
+      }
+      validation = await readProcessOutput(
+        this.binaryPath,
+        buildValidateArgs(
+          context.app.appId,
+          resolvedVersion.versionId,
+          context.app.platform
+        ),
+        this.env
+      );
+    }
+
     const submit = await submitVersionForReview({
       binaryPath: this.binaryPath,
       appId: context.app.appId,
@@ -2794,8 +2876,14 @@ export class AppleAscProvider implements ProviderAdapter {
 
     return providerExecutionResultSchema.parse({
       ok: true,
-      summary: `Submitted version ${version} build ${context.plan.buildNumber ?? context.plan.buildId} to App Store review.`,
+      summary: attachBuild
+        ? `Attached build ${context.plan.buildNumber ?? buildId} to version ${version} and submitted it to App Store review without changing release notes.`
+        : `Submitted version ${version} build ${context.plan.buildNumber ?? context.plan.buildId} to App Store review without changing release notes.`,
       rawResult: {
+        versionLookup: versionLookup.lookup.json,
+        versionDetails: versionDetails?.json,
+        attachBuild: attachBuild?.json,
+        validation: validation?.json,
         submissionCreate: submit.submissionCreate.json,
         itemAdd: submit.itemAdd.json,
         submissionSubmit: submit.submissionSubmit.json

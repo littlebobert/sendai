@@ -78,11 +78,11 @@ const ACTION_ROUTING_GUIDE = [
   "prepare_release_for_review = pre-review preparation. It creates or updates an App Store version, uploads actual source release-note text, localizes metadata, attaches a TestFlight build, validates, and submits for App Store review. Use this only when the operator provides actual release-note source text or explicitly asks for generic release notes. Statements like 'release notes already exist' are not release-note text.",
   "update_draft_release = update an existing draft without submitting for review. Use when the operator wants to attach a build or upload actual release-note text to a draft version.",
   "create_draft_release = create an empty draft version only. Use when the operator explicitly asks for a draft/empty version without release notes, build attachment, validation, or review submission.",
-  "submit_release_for_review = submit an already prepared version to Apple review. Use when metadata/build are already prepared and the operator asks to submit for review, not to publish to customers.",
+  "submit_release_for_review = submit an existing App Store version to Apple review. Use when the operator asks to submit for review without providing new release-note source text, including requests to attach the latest TestFlight build and submit. Do not upload release notes for this action.",
   "release_status = read-only status lookup. Use for questions about current/live/latest/review/release status.",
   "list_app_aliases = local alias lookup. Use for listing or discovering configured app aliases.",
-  "run_asc_commands = other App Store Connect workflows and read-only queries that do not fit the named actions, including attaching a TestFlight build and submitting it for review when no new release-note source text is provided.",
-  "Routing examples: 'release dotsu for iOS 1.4.3' -> release_to_app_store; 'it already has release notes and is ready to release' -> release_to_app_store; 'attach the latest TestFlight to dotsu for iOS 1.4.4 and submit it for review' -> run_asc_commands; 'prepare dotsu 1.4.3 with these release notes: ...' -> prepare_release_for_review; 'submit the prepared 1.4.3 build for review' -> submit_release_for_review; 'create an empty draft for 1.4.3' -> create_draft_release."
+  "run_asc_commands = other App Store Connect workflows and read-only queries that do not fit the named actions, including attaching a TestFlight build without submitting it when no new release-note source text is provided.",
+  "Routing examples: 'release dotsu for iOS 1.4.3' -> release_to_app_store; 'it already has release notes and is ready to release' -> release_to_app_store; 'attach the latest TestFlight to dotsu for iOS 1.4.4 and submit it for review' -> submit_release_for_review; 'prepare dotsu 1.4.3 with these release notes: ...' -> prepare_release_for_review; 'submit the prepared 1.4.3 build for review' -> submit_release_for_review; 'create an empty draft for 1.4.3' -> create_draft_release."
 ];
 
 function withOpenAiRequestOptions<T extends object>(
@@ -252,14 +252,8 @@ function inferActionTypeFromCommandText(
     /\b(create|prepare)\b.*\b(release|review|submission)\b|\bnew release\b|\bcreate\b.*\bversion\b|リリース.*(作成|準備)|バージョン.*作成/i.test(
       normalized
     );
-  const mentionsAttachBuild =
-    /\battach\b.*\b(testflight|build)\b|TestFlight.*(添付|追加)|ビルド.*(添付|追加)/i.test(
-      normalized
-    );
-  const mentionsSubmitForReview =
-    /\bsubmit\b.*\b(review|apple|app store)\b|審査に提出|Apple.*提出/i.test(
-      normalized
-    );
+  const mentionsAttachBuild = mentionsBuildAttachment(normalized);
+  const mentionsSubmitForReview = mentionsReviewSubmission(normalized);
 
   const mentionsForReview = /\bfor\s+review\b|審査(に)?提出|審査申請/i.test(
     normalized
@@ -302,6 +296,16 @@ function inferActionTypeFromCommandText(
     )
   ) {
     return "update_draft_release";
+  }
+
+  if (
+    hasExplicitVersion &&
+    mentionsAttachBuild &&
+    mentionsSubmitForReview &&
+    !hasReleaseNoteSource &&
+    !mentionsLocalization
+  ) {
+    return "submit_release_for_review";
   }
 
   if (
@@ -404,6 +408,18 @@ function extractLikelyAppReferenceFromText(text: string): string | undefined {
 
 function requestedGenericReleaseNotes(text: string): boolean {
   return /\b(make\s+up|generic|placeholder|default)\b.*\brelease notes?\b|\brelease notes?\b.*\b(make\s+up|generic|placeholder|default)\b/i.test(
+    text
+  );
+}
+
+function mentionsBuildAttachment(text: string): boolean {
+  return /\battach\b.*\b(testflight|build)\b|\bassociate\b.*\b(testflight|build)\b|TestFlight.*(添付|追加|関連付け)|ビルド.*(添付|追加|関連付け)/i.test(
+    text
+  );
+}
+
+function mentionsReviewSubmission(text: string): boolean {
+  return /\bsubmit\b.*\b(review|apple|app store)\b|審査に提出|審査提出|Apple.*提出/i.test(
     text
   );
 }
@@ -634,6 +650,27 @@ function normalizePlannerOutput(
     record.releaseNotes = "Bug fixes and performance improvements.";
   }
 
+  if (
+    (record.actionType === "prepare_release_for_review" ||
+      record.actionType === "update_draft_release") &&
+    typeof record.releaseNotes !== "string" &&
+    !requestedGenericReleaseNotes(input.rawCommand)
+  ) {
+    const commandText = input.latestUserMessage ?? input.rawCommand;
+    if (
+      extractVersionFromText(commandText) &&
+      mentionsBuildAttachment(commandText) &&
+      mentionsReviewSubmission(commandText) &&
+      !providesReleaseNoteSourceText(commandText)
+    ) {
+      record.actionType = "submit_release_for_review";
+    } else {
+      record.needsClarification = true;
+      record.clarificationQuestion =
+        "Please provide release notes for this release preparation, or ask to submit the existing App Store version without changing release notes.";
+    }
+  }
+
   return record;
 }
 
@@ -714,7 +751,8 @@ export class OpenAiCommandPlanner {
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
             ...ACTION_ROUTING_GUIDE,
             "Use cancel_review_submission when the operator explicitly wants to cancel or withdraw a review submission.",
-            "If the operator wants to attach a TestFlight build to a version, with or without submitting it for review, and does not provide new release-note source text, use run_asc_commands, not prepare_release_for_review.",
+            "If the operator wants to attach a TestFlight build and submit it for review, and does not provide new release-note source text, use submit_release_for_review, not prepare_release_for_review.",
+            "If the operator wants to attach a TestFlight build without submitting it for review, and does not provide new release-note source text, use run_asc_commands, not prepare_release_for_review.",
             "For prepare_release_for_review, keep releaseNotes as one plain source string. Do not turn it into a localized object or array.",
             "Never put the operator's instruction itself in releaseNotes. Only use releaseNotes when the user explicitly provides release-note source text, such as 'release notes: ...', or explicitly asks for generic release notes.",
             "For prepare_release_for_review, do not ask the user to list locales when they ask for required locales; the provider can discover locales and translate the source release notes automatically.",
@@ -793,7 +831,8 @@ export class OpenAiCommandPlanner {
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
             ...ACTION_ROUTING_GUIDE,
             "Use cancel_review_submission when the operator explicitly wants to cancel or withdraw a review submission.",
-            "If the operator wants to attach a TestFlight build to a version, with or without submitting it for review, and does not provide new release-note source text, use run_asc_commands, not prepare_release_for_review.",
+            "If the operator wants to attach a TestFlight build and submit it for review, and does not provide new release-note source text, use submit_release_for_review, not prepare_release_for_review.",
+            "If the operator wants to attach a TestFlight build without submitting it for review, and does not provide new release-note source text, use run_asc_commands, not prepare_release_for_review.",
             "For prepare_release_for_review, keep releaseNotes as one plain source string. Do not turn it into a localized object or array.",
             "Never put the operator's instruction itself in releaseNotes. Only use releaseNotes when the user explicitly provides release-note source text, such as 'release notes: ...', or explicitly asks for generic release notes.",
             "For prepare_release_for_review, do not ask the user to list locales when they ask for required locales; the provider can discover locales and translate the source release notes automatically.",
@@ -855,6 +894,19 @@ export class OpenAiCommandPlanner {
       latestUserMessage,
       previousRequest: input.previousRequest
     });
+
+    if (plannerOutput.needsClarification) {
+      const assistantReply =
+        plannerOutput.clarificationQuestion ?? parsed.assistantReply;
+      return {
+        assistantReply,
+        conversationContextReply: [
+          assistantReply,
+          `Known structured request: ${JSON.stringify(plannerOutput)}`
+        ].join("\n"),
+        plannedRequest: null
+      };
+    }
 
     return {
       assistantReply: parsed.assistantReply,

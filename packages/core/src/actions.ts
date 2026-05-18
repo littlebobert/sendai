@@ -91,6 +91,7 @@ export const plannerOutputSchema = plannerOutputObjectSchema.superRefine(
     }
 
     if (
+      !value.needsClarification &&
       (value.actionType === "prepare_release_for_review" ||
         value.actionType === "update_draft_release") &&
       !value.releaseNotes
