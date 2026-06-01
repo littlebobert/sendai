@@ -840,6 +840,10 @@ function extractLocales(payload: Record<string, unknown>): string[] {
   return uniqueLocales.length > 0 ? uniqueLocales : ["en-US"];
 }
 
+function mergeLocales(...localeLists: string[][]): string[] {
+  return Array.from(new Set(localeLists.flat())).sort();
+}
+
 function requireReleaseNotes(request: NormalizedActionRequest): string {
   if (!request.releaseNotes) {
     throw new Error(
@@ -1300,7 +1304,7 @@ function summarizePrepareReleasePlan(input: {
     input.buildAlreadyAttached
       ? `Build ${input.buildNumber} (${input.buildId}) is already attached.`
       : `Will attach build ${input.buildNumber} (${input.buildId}).`,
-    `Will apply localized release notes for ${input.locales.length} locale(s).`,
+    `Will apply localized release notes for ${input.locales.length} locale(s): ${input.locales.join(", ")}.`,
     input.dryRunValidated
       ? "Localization dry-run succeeded."
       : "Localization dry-run will run during execution after the version exists.",
@@ -2240,15 +2244,29 @@ export class AppleAscProvider implements ProviderAdapter {
         );
       }
 
-      const localizationMetadata = await readProcessOutput(
+      const appInfoLocalizationMetadata = await readProcessOutput(
         this.binaryPath,
         buildLocalizationsListArgs({
-          appId: app.appId,
-          versionId: versionRecord?.versionId
+          appId: app.appId
         }),
         this.env
       );
-      const locales = extractLocales(localizationMetadata.json);
+      const versionLocalizationMetadata = versionRecord
+        ? await readProcessOutput(
+            this.binaryPath,
+            buildLocalizationsListArgs({
+              appId: app.appId,
+              versionId: versionRecord.versionId
+            }),
+            this.env
+          )
+        : null;
+      const locales = mergeLocales(
+        extractLocales(appInfoLocalizationMetadata.json),
+        versionLocalizationMetadata
+          ? extractLocales(versionLocalizationMetadata.json)
+          : []
+      );
       const localizedReleaseNotes =
         await this.releaseNotesTranslator.translateReleaseNotes({
           baseNotes: releaseNotes,
@@ -2285,8 +2303,11 @@ export class AppleAscProvider implements ProviderAdapter {
       const previewCommands = [
         latestBuild.displayCommand,
         versionLookup.displayCommand,
-        localizationMetadata.displayCommand
+        appInfoLocalizationMetadata.displayCommand
       ];
+      if (versionLocalizationMetadata) {
+        previewCommands.push(versionLocalizationMetadata.displayCommand);
+      }
       if (!versionRecord) {
         previewCommands.push(
           buildDisplayCommand(
@@ -2368,7 +2389,8 @@ export class AppleAscProvider implements ProviderAdapter {
           versionId: versionRecord?.versionId,
           versionState: versionRecord?.appStoreState,
           versionDetails: versionDetails?.json,
-          localizationMetadata: localizationMetadata.json,
+          appInfoLocalizationMetadata: appInfoLocalizationMetadata.json,
+          versionLocalizationMetadata: versionLocalizationMetadata?.json,
           localizationsDryRun: localizationsDryRun?.json,
           attachedBuildId,
           localizedReleaseNotes,
