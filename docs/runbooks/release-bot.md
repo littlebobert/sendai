@@ -70,12 +70,12 @@ Examples:
 
 ```sql
 UPDATE app_aliases
-SET metadata = '{"bundleId":"jp.tech.kotoba.app"}'::jsonb
-WHERE alias = 'dotsu';
+SET metadata = '{"bundleId":"com.example.myapp"}'::jsonb
+WHERE alias = 'my-ios-app';
 
 UPDATE app_aliases
-SET metadata = '{"bundleIds":["jp.tech.kotoba.app","jp.tech.kotoba.beta"]}'::jsonb
-WHERE alias = 'dotsu';
+SET metadata = '{"bundleIds":["com.example.myapp","com.example.myapp.beta"]}'::jsonb
+WHERE alias = 'my-ios-app';
 
 UPDATE app_aliases
 SET metadata = '{"packageName":"com.example.android"}'::jsonb
@@ -157,9 +157,9 @@ Example phrases:
 - `submit the latest 1.3.7 TestFlight to Apple for public release`
 - `1.3.7 の最新 TestFlight ビルドを Apple の公開リリース審査に提出して`
 - `show release status for my-ios-app`
-- `tell me about the latest release for dotsu (jp.tech.kotoba.app) for iOS`
-- `show release status for jp.tech.kotoba.app`
-- `cancel the App Store review submission for dotsu version 1.3.8`
+- `tell me about the latest release for my-ios-app (com.example.myapp) for iOS`
+- `show release status for com.example.myapp`
+- `cancel the App Store review submission for my-ios-app version 1.3.8`
 
 The conversation planner does not choose from a fixed Apple workflow enum. It resolves app context first, then the Apple provider generates a validated `asc` command recipe with captured variables such as `buildId` or `versionId`, and shows that exact command list back in Slack before approval.
 
@@ -184,7 +184,7 @@ az acr config authentication-as-arm update -r <acr-name> --status enabled
 
 Copy `infra/bicep/main.parameters.example.json` to your own parameter file and replace the placeholders, then deploy:
 
-- `containerRegistryName` should be your ACR name such as `kotoba`
+- `containerRegistryName` should be your ACR name such as `myregistry`
 - `containerRegistryResourceGroup` should be the resource group that owns the ACR
 - If your ACR lives in a different subscription, also set `containerRegistrySubscriptionId`
 

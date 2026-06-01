@@ -74,7 +74,7 @@ export interface OpenAiConversationTurnResult {
 
 const ACTION_ROUTING_GUIDE = [
   "Action routing catalog:",
-  "release_to_app_store = final customer publish only. It moves an already prepared and approved App Store version from Pending Developer Release to live on the App Store. It does not create/update metadata, upload release notes, attach builds, validate, or submit for review. Use this for phrasing like 'release dotsu for iOS 1.4.3', 'go live', 'ready to release', 'approved', 'already has release notes', 'metadata is ready', or 'pending developer release'. Never ask for release notes for this action.",
+  "release_to_app_store = final customer publish only. It moves an already prepared and approved App Store version from Pending Developer Release to live on the App Store. It does not create/update metadata, upload release notes, attach builds, validate, or submit for review. Use this for phrasing like 'release my-ios-app for iOS 1.4.3', 'go live', 'ready to release', 'approved', 'already has release notes', 'metadata is ready', or 'pending developer release'. Never ask for release notes for this action.",
   "prepare_release_for_review = pre-review preparation. It creates or updates an App Store version, uploads actual source release-note text, localizes metadata, attaches a TestFlight build, validates, and submits for App Store review. Use this only when the operator provides actual release-note source text or explicitly asks for generic release notes. Statements like 'release notes already exist' are not release-note text.",
   "update_draft_release = update an existing draft without submitting for review. Use when the operator wants to attach a build or upload actual release-note text to a draft version.",
   "create_draft_release = create an empty draft version only. Use when the operator explicitly asks for a draft/empty version without release notes, build attachment, validation, or review submission.",
@@ -82,7 +82,7 @@ const ACTION_ROUTING_GUIDE = [
   "release_status = read-only status lookup. Use for questions about current/live/latest/review/release status.",
   "list_app_aliases = local alias lookup. Use for listing or discovering configured app aliases.",
   "run_asc_commands = other App Store Connect workflows and read-only queries that do not fit the named actions, including attaching a TestFlight build without submitting it when no new release-note source text is provided.",
-  "Routing examples: 'release dotsu for iOS 1.4.3' -> release_to_app_store; 'it already has release notes and is ready to release' -> release_to_app_store; 'attach the latest TestFlight to dotsu for iOS 1.4.4 and submit it for review' -> submit_release_for_review; 'prepare dotsu 1.4.3 with these release notes: ...' -> prepare_release_for_review; 'submit the prepared 1.4.3 build for review' -> submit_release_for_review; 'create an empty draft for 1.4.3' -> create_draft_release."
+  "Routing examples: 'release my-ios-app for iOS 1.4.3' -> release_to_app_store; 'it already has release notes and is ready to release' -> release_to_app_store; 'attach the latest TestFlight to my-ios-app for iOS 1.4.4 and submit it for review' -> submit_release_for_review; 'prepare my-ios-app 1.4.3 with these release notes: ...' -> prepare_release_for_review; 'submit the prepared 1.4.3 build for review' -> submit_release_for_review; 'create an empty draft for 1.4.3' -> create_draft_release."
 ];
 
 const DEFAULT_GENERIC_RELEASE_NOTES =
@@ -722,9 +722,9 @@ export class OpenAiCommandPlanner {
             "Use list_app_aliases when the operator asks to list, show, or discover configured app aliases. This is a local configuration lookup, not an asc command.",
             "For list_app_aliases, infer provider as apple for iOS/App Store aliases and google-play for Android/Google Play aliases. Put any account/team/filter text in appReference; if there is no filter, set appReference to all.",
             "appReference must be the app identifier the operator used, such as the configured app alias, bundle ID, or package name.",
-            "If the operator provides a short app-like token such as dotsu, treat that token as appReference and do not ask for an exact alias or bundle ID.",
+            "If the operator provides a short app-like token such as my-ios-app, treat that token as appReference and do not ask for an exact alias or bundle ID.",
             "If the operator provides an App Store numeric app ID, use that numeric ID as appReference.",
-            "If the user writes something like 'dotsu (jp.tech.kotoba.app)', prefer the alias and set appReference to 'dotsu'.",
+            "If the user writes something like 'my-ios-app (com.example.myapp)', prefer the alias and set appReference to 'my-ios-app'.",
             "If the user only provides a bundle ID or package name, set appReference to that identifier string.",
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
             ...ACTION_ROUTING_GUIDE,
@@ -802,9 +802,9 @@ export class OpenAiCommandPlanner {
             "Use list_app_aliases when the operator asks to list, show, or discover configured app aliases. This is a local configuration lookup, not an asc command.",
             "For list_app_aliases, infer provider as apple for iOS/App Store aliases and google-play for Android/Google Play aliases. Put any account/team/filter text in appReference; if there is no filter, set appReference to all.",
             "appReference must be the app identifier the operator used, such as the configured app alias, bundle ID, or package name.",
-            "If the operator provides a short app-like token such as dotsu, treat that token as appReference and do not ask for an exact alias or bundle ID.",
+            "If the operator provides a short app-like token such as my-ios-app, treat that token as appReference and do not ask for an exact alias or bundle ID.",
             "If the operator provides an App Store numeric app ID, use that numeric ID as appReference.",
-            "If the user writes something like 'dotsu (jp.tech.kotoba.app)', prefer the alias and set appReference to 'dotsu'.",
+            "If the user writes something like 'my-ios-app (com.example.myapp)', prefer the alias and set appReference to 'my-ios-app'.",
             "If the user only provides a bundle ID or package name, set appReference to that identifier string.",
             "When a reply supplies one missing detail, combine it with the earlier request instead of re-asking for details already present in the conversation.",
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
