@@ -1,4 +1,4 @@
-# Store Agent
+# Sendai
 
 Slack bot for App Store Connect release operations, designed for Azure deployment.
 
