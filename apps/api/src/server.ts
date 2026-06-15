@@ -14,6 +14,7 @@ import {
   type PlannedActionRequest,
   type ProviderExecutionPlan,
   canCancelApproval,
+  canContinueConversation,
   hashApprovalToken,
   isWriteAction,
   OpenAiCommandPlanner,
@@ -461,14 +462,18 @@ async function main(): Promise<void> {
         input.channelId,
         input.threadTs
       );
+      const actor = await store.getSlackUser(input.userId);
 
-      if (existingSession && existingSession.ownerSlackUserId !== input.userId) {
+      if (
+        existingSession &&
+        !canContinueConversation(actor, existingSession.ownerSlackUserId)
+      ) {
         if (input.respondOnOwnershipConflict) {
           await postConversationMessage(input.client, target, {
-            text: `This conversation belongs to <@${existingSession.ownerSlackUserId}>. Start a new ${config.SLACK_COMMAND_NAME} or mention the bot in a new thread to create your own plan.`,
+            text: `This conversation belongs to <@${existingSession.ownerSlackUserId}>. Start a new ${config.SLACK_COMMAND_NAME} or mention the bot in a new thread to create your own plan. Admins can continue existing threads.`,
             blocks: buildConversationMessageBlocks(
               "Conversation already in progress",
-              `This thread belongs to <@${existingSession.ownerSlackUserId}>. Start a new ${config.SLACK_COMMAND_NAME} or mention the bot in a new thread to create your own plan.`
+              `This thread belongs to <@${existingSession.ownerSlackUserId}>. Start a new ${config.SLACK_COMMAND_NAME} or mention the bot in a new thread to create your own plan. Admins can continue existing threads.`
             )
           });
         }
@@ -486,14 +491,14 @@ async function main(): Promise<void> {
         return;
       }
 
-      requireRequestAccess(await store.getSlackUser(input.userId));
+      requireRequestAccess(actor);
 
       session = await saveConversationSession({
         existingSession: session,
         teamId: input.teamId,
         channelId: input.channelId,
         threadTs: input.threadTs,
-        ownerSlackUserId: input.userId,
+        ownerSlackUserId: session?.ownerSlackUserId ?? input.userId,
         messages: [
           ...(input.resetSession ? [] : session?.messages ?? []),
           {
@@ -920,7 +925,8 @@ async function main(): Promise<void> {
     }
 
     try {
-      requireRequestAccess(await store.getSlackUser(mentionEvent.user));
+      const actor = await store.getSlackUser(mentionEvent.user);
+      requireRequestAccess(actor);
 
       const teamId = extractTeamId(body as Record<string, unknown>);
       const threadTs = mentionEvent.thread_ts ?? mentionEvent.ts;
@@ -932,12 +938,15 @@ async function main(): Promise<void> {
         threadTs
       );
 
-      if (existingSession && existingSession.ownerSlackUserId !== mentionEvent.user) {
+      if (
+        existingSession &&
+        !canContinueConversation(actor, existingSession.ownerSlackUserId)
+      ) {
         await postConversationMessage(client, target, {
-          text: `This conversation belongs to <@${existingSession.ownerSlackUserId}>. Start a new ${config.SLACK_COMMAND_NAME} or mention the bot in a new thread to create your own plan.`,
+          text: `This conversation belongs to <@${existingSession.ownerSlackUserId}>. Start a new ${config.SLACK_COMMAND_NAME} or mention the bot in a new thread to create your own plan. Admins can continue existing threads.`,
           blocks: buildConversationMessageBlocks(
             "Conversation already in progress",
-            `This thread belongs to <@${existingSession.ownerSlackUserId}>. Start a new ${config.SLACK_COMMAND_NAME} or mention the bot in a new thread to create your own plan.`
+            `This thread belongs to <@${existingSession.ownerSlackUserId}>. Start a new ${config.SLACK_COMMAND_NAME} or mention the bot in a new thread to create your own plan. Admins can continue existing threads.`
           )
         });
         return;
@@ -953,7 +962,7 @@ async function main(): Promise<void> {
           teamId,
           channelId: mentionEvent.channel,
           threadTs,
-          ownerSlackUserId: mentionEvent.user,
+          ownerSlackUserId: existingSession?.ownerSlackUserId ?? mentionEvent.user,
           messages: [
             ...(existingSession?.messages ?? []),
             {
@@ -1060,8 +1069,9 @@ async function main(): Promise<void> {
         messageEvent.channel,
         messageEvent.thread_ts
       );
+      const actor = await store.getSlackUser(messageEvent.user);
 
-      if (!session || session.ownerSlackUserId !== messageEvent.user) {
+      if (!session || !canContinueConversation(actor, session.ownerSlackUserId)) {
         return;
       }
 

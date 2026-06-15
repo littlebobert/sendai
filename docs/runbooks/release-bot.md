@@ -233,7 +233,7 @@ https://<container-app-fqdn>/slack/events
 ## Release Flow
 
 1. Operator starts with `/asc`, a DM to the bot, or a bot mention in a thread.
-2. Slack creates or resumes a conversation in the same DM or thread.
+2. Slack creates or resumes a conversation in the same DM or thread. The original requester or any active `admin` can continue an existing thread.
 3. OpenAI either asks a follow-up question or returns the request context needed to continue.
 4. The Apple provider generates a validated `asc` command recipe from live CLI docs and runs any read-only preflight steps needed to capture IDs and resolve placeholders.
 5. Slack shows the exact `asc` commands in the same DM or thread and waits for confirmation when the plan is a write action.
@@ -251,7 +251,7 @@ https://<container-app-fqdn>/slack/events
 
 ### The conversation plans the wrong app or version
 
-- Reply in the same thread or DM with the corrected app alias, version, or release notes.
+- Reply in the same thread or DM with the corrected app alias, version, or release notes. In a shared thread, only the original requester and active `admin` users can continue the conversation.
 - Start a fresh `/asc` conversation if you want to discard the current planning context.
 - Review the OpenAI model and prompt output in logs.
 - Prefer stable app aliases such as `my-ios-app`.

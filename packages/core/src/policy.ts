@@ -41,6 +41,17 @@ export function canCancelApproval(
   );
 }
 
+export function canContinueConversation(
+  access: SlackUserAccess | null,
+  ownerSlackUserId: string
+): boolean {
+  return (
+    access !== null &&
+    access.isActive &&
+    (access.slackUserId === ownerSlackUserId || access.role === "admin")
+  );
+}
+
 export function requireRequestAccess(access: SlackUserAccess | null): void {
   if (!canRequestWrite(access)) {
     throw new Error("You are not allowed to request release actions.");
