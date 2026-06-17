@@ -1,6 +1,12 @@
 import SlackWebApi from "@slack/web-api";
-import type { PostgresStore } from "@store-agent/core";
+import {
+  formatAscValidateFailure,
+  type PostgresStore,
+  truncateSlackText
+} from "@store-agent/core";
 import { ProviderRegistry } from "@store-agent/providers";
+
+import { buildExecutionFailureBlocks } from "./slackMessages.js";
 
 const { WebClient } = SlackWebApi;
 
@@ -10,6 +16,38 @@ function toErrorMessage(error: unknown): string {
   }
 
   return "An unknown error occurred.";
+}
+
+function buildExecutionFailureMessage(input: {
+  requestedBy: string;
+  actionType: string;
+  rawError: string;
+}): {
+  title: string;
+  message: string;
+  text: string;
+} {
+  const title =
+    input.actionType === "run_asc_commands"
+      ? "ASC command execution failed"
+      : "Release execution failed";
+  const formatted = formatAscValidateFailure(input.rawError);
+
+  if (formatted) {
+    const message = truncateSlackText(`${formatted.title}\n\n${formatted.body}`);
+    return {
+      title,
+      message,
+      text: `<@${input.requestedBy}> ${title}: ${message}`
+    };
+  }
+
+  const message = truncateSlackText(input.rawError);
+  return {
+    title,
+    message,
+    text: `<@${input.requestedBy}> ${title}: ${message}`
+  };
 }
 
 interface ReleaseExecutorOptions {
@@ -102,6 +140,12 @@ export class ReleaseExecutor {
       });
     } catch (error) {
       const message = toErrorMessage(error);
+      const slackFailure = buildExecutionFailureMessage({
+        requestedBy: approval.requestedBy,
+        actionType: approval.actionType,
+        rawError: message
+      });
+
       await this.store.completeExecution(approvalId, false, {
         summary: message
       }, message);
@@ -112,10 +156,11 @@ export class ReleaseExecutor {
       await this.slackClient.chat.postMessage({
         channel: approval.channelId,
         thread_ts: approval.threadTs ?? undefined,
-        text:
-          approval.actionType === "run_asc_commands"
-            ? `<@${approval.requestedBy}> ASC command execution failed: ${message}`
-            : `<@${approval.requestedBy}> Release execution failed: ${message}`
+        text: slackFailure.text,
+        blocks: buildExecutionFailureBlocks(
+          slackFailure.title,
+          slackFailure.message
+        )
       });
 
       throw error;
