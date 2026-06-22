@@ -79,6 +79,7 @@ interface CommandExecutionState {
 const ASC_DOC_HELP_PATHS = [
   ["apps"],
   ["builds"],
+  ["builds", "info"],
   ["builds", "latest"],
   ["versions"],
   ["versions", "list"],
@@ -526,7 +527,7 @@ function suggestCommandPathsFromRequest(rawCommand: string): string[][] {
   if (/\bsubmit\b|\breview\b|審査/i.test(text)) {
     suggestions.push(
       ["builds"],
-      ["builds", "latest"],
+      ["builds", "info"],
       ["review"],
       ["review", "submissions-create"],
       ["review", "items-add"],
@@ -574,6 +575,14 @@ function extractLongFlags(args: string[]): string[] {
   return args
     .filter((arg) => arg.startsWith("--"))
     .map((arg) => arg.split("=")[0] ?? arg);
+}
+
+function extractSupportedLongFlags(helpText: string): Set<string> {
+  return new Set(
+    (helpText.match(/--[a-z0-9][a-z0-9-]*/gi) ?? []).map((flag) =>
+      flag.toLowerCase()
+    )
+  );
 }
 
 function isWriteCommandArgs(args: string[]): boolean {
@@ -937,6 +946,45 @@ function buildVersionCreateArgs(
   }
   args.push("--output", "json");
   return args;
+}
+
+function buildLatestBuildInfoArgs(
+  appId: string,
+  version: string,
+  platform: string
+): string[] {
+  return [
+    "builds",
+    "info",
+    "--app",
+    appId,
+    "--latest",
+    "--version",
+    version,
+    "--platform",
+    platform,
+    "--output",
+    "json"
+  ];
+}
+
+function buildLegacyLatestBuildArgs(
+  appId: string,
+  version: string,
+  platform: string
+): string[] {
+  return [
+    "builds",
+    "latest",
+    "--app",
+    appId,
+    "--version",
+    version,
+    "--platform",
+    platform,
+    "--output",
+    "json"
+  ];
 }
 
 function buildVersionViewArgs(versionId: string): string[] {
@@ -1642,6 +1690,56 @@ export class AppleAscProvider implements ProviderAdapter {
     return promise;
   }
 
+  private async supportsBuildsInfoLatest(): Promise<boolean> {
+    try {
+      const helpText = await this.getHelpTextForCommandPath(["builds", "info"]);
+      const supportedFlags = extractSupportedLongFlags(helpText);
+      const requiredFlags = [
+        "--app",
+        "--latest",
+        "--version",
+        "--platform",
+        "--output"
+      ];
+      return requiredFlags.every((flag) => supportedFlags.has(flag));
+    } catch {
+      return false;
+    }
+  }
+
+  private async buildLatestBuildLookupArgs(input: {
+    appId: string;
+    version: string;
+    platform: string;
+  }): Promise<string[]> {
+    if (await this.supportsBuildsInfoLatest()) {
+      return buildLatestBuildInfoArgs(input.appId, input.version, input.platform);
+    }
+
+    try {
+      await this.getHelpTextForCommandPath(["builds", "latest"]);
+      return buildLegacyLatestBuildArgs(
+        input.appId,
+        input.version,
+        input.platform
+      );
+    } catch {
+      return buildLatestBuildInfoArgs(input.appId, input.version, input.platform);
+    }
+  }
+
+  private async readLatestBuildForVersion(input: {
+    appId: string;
+    version: string;
+    platform: string;
+  }): Promise<AscCommandResult> {
+    return readProcessOutput(
+      this.binaryPath,
+      await this.buildLatestBuildLookupArgs(input),
+      this.env
+    );
+  }
+
   private async getAvailableHelpPaths(): Promise<string[][]> {
     if (!this.availableHelpPathsPromise) {
       const promise: Promise<string[][]> = (async () => {
@@ -1822,12 +1920,19 @@ export class AppleAscProvider implements ProviderAdapter {
         );
       }
 
+      if (
+        commandPathKey(commandPath) === "builds latest" &&
+        (await this.supportsBuildsInfoLatest())
+      ) {
+        const supportedCommand =
+          "asc builds info --latest --version {{version}} --platform {{platform}}";
+        throw new Error(
+          `The generated command recipe uses unsupported command "asc builds latest" for this asc install. Use "${supportedCommand}" instead. Generated command: ${generatedCommand}`
+        );
+      }
+
       const helpText = await this.getHelpTextForCommandPath(commandPath);
-      const supportedFlags = new Set(
-        (helpText.match(/--[a-z0-9][a-z0-9-]*/gi) ?? []).map((flag) =>
-          flag.toLowerCase()
-        )
-      );
+      const supportedFlags = extractSupportedLongFlags(helpText);
       for (const flag of extractLongFlags(step.args)) {
         if (!supportedFlags.has(flag.toLowerCase())) {
           throw new Error(
@@ -2212,22 +2317,11 @@ export class AppleAscProvider implements ProviderAdapter {
         );
       }
 
-      const latestBuild = await readProcessOutput(
-        this.binaryPath,
-        [
-          "builds",
-          "latest",
-          "--app",
-          app.appId,
-          "--version",
-          version,
-          "--platform",
-          app.platform,
-          "--output",
-          "json"
-        ],
-        this.env
-      );
+      const latestBuild = await this.readLatestBuildForVersion({
+        appId: app.appId,
+        version,
+        platform: app.platform
+      });
       const { buildId, buildNumber } = extractBuildDetails(latestBuild.json);
 
       const { lookup: versionLookup, versionRecord } = await lookupAppStoreVersion({
@@ -2401,22 +2495,11 @@ export class AppleAscProvider implements ProviderAdapter {
     }
 
     const version = requireVersion(request);
-    const latestBuild = await readProcessOutput(
-      this.binaryPath,
-      [
-        "builds",
-        "latest",
-        "--app",
-        app.appId,
-        "--version",
-        version,
-        "--platform",
-        app.platform,
-        "--output",
-        "json"
-      ],
-      this.env
-    );
+    const latestBuild = await this.readLatestBuildForVersion({
+      appId: app.appId,
+      version,
+      platform: app.platform
+    });
     const { buildId, buildNumber } = extractBuildDetails(latestBuild.json);
     const { lookup: versionLookup, versionRecord } = await lookupAppStoreVersion({
       binaryPath: this.binaryPath,
