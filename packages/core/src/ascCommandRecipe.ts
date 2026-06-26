@@ -355,6 +355,7 @@ export class OpenAiAscCommandRecipePlanner {
             "Include both the top-level command group and the most likely nested subcommands when useful.",
             "For ratings questions, prefer reviews and reviews ratings.",
             "For App Store review submission requests, prefer review, review submissions-create, review items-add, and review submissions-submit.",
+            "For reject, withdraw, hold, or remove-from-Ready-for-Release requests, prefer review status, review submissions-list, review submissions-cancel, submit status, submit cancel, versions list, and versions view when available.",
             "For requests that attach a TestFlight build and submit for review, include builds info and versions attach-build when available.",
             "For release status questions, prefer versions, versions list, and versions view when available; use versions get only if the command catalog lacks versions view.",
             "Do not invent command paths that are not in the catalog."
@@ -432,6 +433,8 @@ export class OpenAiAscCommandRecipePlanner {
             "When submitting a prepared App Store version for review, use asc review submissions-create to capture submissionId, asc review items-add with --item-type appStoreVersions and the versionId, then asc review submissions-submit --id {{submissionId}} --confirm.",
             "When the operator asks to attach the latest TestFlight build and submit for review, do not upload or localize release notes unless the operator explicitly provided new release-note source text. Resolve buildId with asc builds info --latest --version {{version}} --platform {{platform}}, resolve versionId with asc versions list, attach with asc versions attach-build, validate, then use the review submission flow.",
             "Do not use asc builds latest unless the provided docs lack asc builds info and explicitly show asc builds latest.",
+            "When the operator wants to reject a version, remove it from Ready for Release, or withdraw an approved release so a new build can be submitted, first inspect current version and review state with asc versions list and asc review status or asc submit status. Prefer asc review submissions-cancel or asc submit cancel for active review submissions, and use other documented mutating commands only when the provided docs show they apply to the current version state.",
+            "Never use asc versions release for reject, withdraw, hold, or remove-from-release requests.",
             "Use asc versions get only when asc versions view is absent from the provided docs or command catalog.",
             "Do not use asc app-info; this asc install does not support that command. Use asc localizations list --app ... --type app-info or asc localizations list --version ... when localization metadata is needed.",
             "If the user mentions a marketing version but the best matching asc command is app-level only, do not force a release workflow; use the app-level command and note that the result is app-level.",

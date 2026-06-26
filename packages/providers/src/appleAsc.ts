@@ -539,6 +539,22 @@ function suggestCommandPathsFromRequest(rawCommand: string): string[][] {
   }
 
   if (
+    /\breject\b|\bwithdraw\b|\bremove\b.*\bready\s+for\s+release\b|\bpull back\b|\bhold\b.*\brelease\b|リリース.*(取り消|取消|却下|中止)|却下/i.test(
+      text
+    )
+  ) {
+    suggestions.push(
+      ["review"],
+      ["review", "submissions-list"],
+      ["review", "submissions-cancel"],
+      ["review", "status"],
+      ["versions"],
+      ["versions", "list"],
+      ["versions", "view"]
+    );
+  }
+
+  if (
     /\bpending\s+developer\s+release\b|\brelease\s+(?:to|on)\s+(?:the\s+)?app\s+store\b|\bgo\s+live\b|\balready\s+approved\b.*\brelease\b/i.test(
       text
     )
