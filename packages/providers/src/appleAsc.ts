@@ -57,6 +57,13 @@ interface AppStoreVersionRecord {
   appStoreState?: string;
 }
 
+interface SelectedBuild {
+  buildId: string;
+  buildNumber: string;
+  previewCommands: string[];
+  rawProviderData: Record<string, unknown>;
+}
+
 interface AscTextResult {
   args: string[];
   displayCommand: string;
@@ -984,6 +991,29 @@ function buildLatestBuildInfoArgs(
   ];
 }
 
+function buildSpecificBuildInfoArgs(
+  appId: string,
+  version: string,
+  buildNumber: string,
+  platform: string,
+  buildNumberFlag: "--build" | "--build-number"
+): string[] {
+  return [
+    "builds",
+    "info",
+    "--app",
+    appId,
+    buildNumberFlag,
+    buildNumber,
+    "--version",
+    version,
+    "--platform",
+    platform,
+    "--output",
+    "json"
+  ];
+}
+
 function buildLegacyLatestBuildArgs(
   appId: string,
   version: string,
@@ -1756,6 +1786,133 @@ export class AppleAscProvider implements ProviderAdapter {
     );
   }
 
+  private async buildSpecificBuildLookupArgs(input: {
+    appId: string;
+    version: string;
+    buildNumber: string;
+    platform: string;
+  }): Promise<string[] | null> {
+    let helpText: string;
+    try {
+      helpText = await this.getHelpTextForCommandPath(["builds", "info"]);
+    } catch {
+      return null;
+    }
+
+    const supportedFlags = extractSupportedLongFlags(helpText);
+    const requiredFlags = ["--app", "--version", "--platform", "--output"];
+    if (!requiredFlags.every((flag) => supportedFlags.has(flag))) {
+      return null;
+    }
+
+    const buildNumberFlag = supportedFlags.has("--build")
+      ? "--build"
+      : supportedFlags.has("--build-number")
+        ? "--build-number"
+        : null;
+
+    return buildNumberFlag
+      ? buildSpecificBuildInfoArgs(
+          input.appId,
+          input.version,
+          input.buildNumber,
+          input.platform,
+          buildNumberFlag
+        )
+      : null;
+  }
+
+  private async readSpecificBuildForVersion(input: {
+    appId: string;
+    version: string;
+    buildNumber: string;
+    platform: string;
+  }): Promise<AscCommandResult> {
+    const specificArgs = await this.buildSpecificBuildLookupArgs(input);
+    if (specificArgs) {
+      return readProcessOutput(this.binaryPath, specificArgs, this.env);
+    }
+
+    const latestBuild = await this.readLatestBuildForVersion(input);
+    const latestDetails = extractBuildDetails(latestBuild.json);
+    if (latestDetails.buildNumber !== input.buildNumber) {
+      throw new Error(
+        `The installed asc builds info command cannot resolve build number ${input.buildNumber} directly, and the latest build for version ${input.version} is ${latestDetails.buildNumber}. Provide the App Store Connect build ID or upload/select the requested build as latest.`
+      );
+    }
+
+    return latestBuild;
+  }
+
+  private async resolveBuildForRequest(input: {
+    appId: string;
+    version: string;
+    platform: string;
+    request: NormalizedActionRequest;
+  }): Promise<SelectedBuild> {
+    if (input.request.buildStrategy === "explicit_build_id") {
+      const buildId = input.request.explicitBuildId;
+      if (!buildId) {
+        throw new Error(
+          "Explicit build selection requires an App Store Connect build ID."
+        );
+      }
+
+      return {
+        buildId,
+        buildNumber: input.request.explicitBuildNumber ?? buildId,
+        previewCommands: [],
+        rawProviderData: {
+          explicitBuildId: buildId,
+          ...(input.request.explicitBuildNumber
+            ? { explicitBuildNumber: input.request.explicitBuildNumber }
+            : {})
+        }
+      };
+    }
+
+    let buildLookup: AscCommandResult;
+    if (input.request.buildStrategy === "explicit_build_number") {
+      const buildNumber = input.request.explicitBuildNumber;
+      if (!buildNumber) {
+        throw new Error("Explicit build number selection requires a build number.");
+      }
+
+      buildLookup = await this.readSpecificBuildForVersion({
+        appId: input.appId,
+        version: input.version,
+        buildNumber,
+        platform: input.platform
+      });
+    } else {
+      buildLookup = await this.readLatestBuildForVersion({
+        appId: input.appId,
+        version: input.version,
+        platform: input.platform
+      });
+    }
+
+    const { buildId, buildNumber } = extractBuildDetails(buildLookup.json);
+    if (
+      input.request.buildStrategy === "explicit_build_number" &&
+      input.request.explicitBuildNumber &&
+      buildNumber !== input.request.explicitBuildNumber
+    ) {
+      throw new Error(
+        `Resolved build ${buildNumber} but the request asked for build ${input.request.explicitBuildNumber}.`
+      );
+    }
+
+    return {
+      buildId,
+      buildNumber,
+      previewCommands: [buildLookup.displayCommand],
+      rawProviderData: {
+        buildLookup: buildLookup.json
+      }
+    };
+  }
+
   private async getAvailableHelpPaths(): Promise<string[][]> {
     if (!this.availableHelpPathsPromise) {
       const promise: Promise<string[][]> = (async () => {
@@ -2333,12 +2490,13 @@ export class AppleAscProvider implements ProviderAdapter {
         );
       }
 
-      const latestBuild = await this.readLatestBuildForVersion({
+      const selectedBuild = await this.resolveBuildForRequest({
         appId: app.appId,
         version,
-        platform: app.platform
+        platform: app.platform,
+        request
       });
-      const { buildId, buildNumber } = extractBuildDetails(latestBuild.json);
+      const { buildId, buildNumber } = selectedBuild;
 
       const { lookup: versionLookup, versionRecord } = await lookupAppStoreVersion({
         binaryPath: this.binaryPath,
@@ -2411,7 +2569,7 @@ export class AppleAscProvider implements ProviderAdapter {
 
       const previewVersionId = versionRecord?.versionId ?? "<version-id-from-create>";
       const previewCommands = [
-        latestBuild.displayCommand,
+        ...selectedBuild.previewCommands,
         versionLookup.displayCommand,
         appInfoLocalizationMetadata.displayCommand
       ];
@@ -2494,7 +2652,7 @@ export class AppleAscProvider implements ProviderAdapter {
             : `Prepared release workflow for existing version ${version} build ${buildNumber} across ${locales.length} locale(s).`
           : `Prepared release workflow to create version ${version} with build ${buildNumber} across ${locales.length} locale(s).`,
         rawProviderData: {
-          latestBuild: latestBuild.json,
+          ...selectedBuild.rawProviderData,
           versionLookup: versionLookup.json,
           versionId: versionRecord?.versionId,
           versionState: versionRecord?.appStoreState,
@@ -2511,12 +2669,13 @@ export class AppleAscProvider implements ProviderAdapter {
     }
 
     const version = requireVersion(request);
-    const latestBuild = await this.readLatestBuildForVersion({
+    const selectedBuild = await this.resolveBuildForRequest({
       appId: app.appId,
       version,
-      platform: app.platform
+      platform: app.platform,
+      request
     });
-    const { buildId, buildNumber } = extractBuildDetails(latestBuild.json);
+    const { buildId, buildNumber } = selectedBuild;
     const { lookup: versionLookup, versionRecord } = await lookupAppStoreVersion({
       binaryPath: this.binaryPath,
       appId: app.appId,
@@ -2555,7 +2714,7 @@ export class AppleAscProvider implements ProviderAdapter {
           );
 
     const previewCommands = [
-      latestBuild.displayCommand,
+      ...selectedBuild.previewCommands,
       versionLookup.displayCommand
     ];
     if (versionDetails) {
@@ -2615,7 +2774,7 @@ export class AppleAscProvider implements ProviderAdapter {
               ? `Prepared App Store submission for version ${version} build ${buildNumber} (${buildId}) without changing release notes.`
               : `Prepared App Store submission for version ${version} build ${buildNumber} (${buildId}).`,
       rawProviderData: {
-        latestBuild: latestBuild.json,
+        ...selectedBuild.rawProviderData,
         versionLookup: versionLookup.json,
         versionId: resolvedVersion.versionId,
         versionState: resolvedVersion.appStoreState,

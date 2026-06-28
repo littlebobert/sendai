@@ -74,15 +74,15 @@ export interface OpenAiConversationTurnResult {
 
 const ACTION_ROUTING_GUIDE = [
   "Action routing catalog:",
-  "release_to_app_store = final customer publish only. It moves an already prepared and approved App Store version from Pending Developer Release to live on the App Store. It does not create/update metadata, upload release notes, attach builds, validate, or submit for review. Use this for phrasing like 'release my-ios-app for iOS 1.4.3', 'go live', 'ready to release', 'approved', 'already has release notes', 'metadata is ready', or 'pending developer release'. Never ask for release notes for this action. Never use this when the operator wants to reject, withdraw, hold, remove from Ready for Release, or stop an approved version from shipping.",
+  "release_to_app_store = final customer publish only. It moves an already prepared and approved App Store version from Pending Developer Release to live on the App Store. It does not create/update metadata, upload release notes, attach builds, validate, or submit for review. Use this for phrasing like 'release my-ios-app for iOS 1.4.3', 'go live', 'ready to release', 'approved', 'already has release notes', 'metadata is ready', or 'pending developer release'. Never ask for release notes for this action. Never use this when the operator wants to attach a build, submit for review, reject, withdraw, hold, remove from Ready for Release, or stop an approved version from shipping.",
   "prepare_release_for_review = pre-review preparation. It creates or updates an App Store version, uploads actual source release-note text, localizes metadata, attaches a TestFlight build, validates, and submits for App Store review. Use this only when the operator provides actual release-note source text or explicitly asks for generic release notes. Statements like 'release notes already exist' are not release-note text.",
   "update_draft_release = update an existing draft without submitting for review. Use when the operator wants to attach a build or upload actual release-note text to a draft version.",
   "create_draft_release = create an empty draft version only. Use when the operator explicitly asks for a draft/empty version without release notes, build attachment, validation, or review submission.",
-  "submit_release_for_review = submit an existing App Store version to Apple review. Use when the operator asks to submit for review without providing new release-note source text, including requests to attach the latest TestFlight build and submit. Do not upload release notes for this action.",
+  "submit_release_for_review = submit an existing App Store version to Apple review. Use when the operator asks to submit for review without providing new release-note source text, including requests to attach the latest TestFlight build and submit. Do not upload release notes for this action. Build numbers such as 'build 155' or '1.4.8 (155)' are not App Store Connect build IDs; use buildStrategy explicit_build_number with explicitBuildNumber for those.",
   "release_status = read-only status lookup. Use for questions about current/live/latest/review/release status.",
   "list_app_aliases = local alias lookup. Use for listing or discovering configured app aliases.",
   "run_asc_commands = other App Store Connect workflows and read-only queries that do not fit the named actions, including rejecting or removing a version from Ready for Release so a new build can be submitted, attaching a TestFlight build without submitting it when no new release-note source text is provided, and holding back an approved release.",
-  "Routing examples: 'release my-ios-app for iOS 1.4.3' -> release_to_app_store; 'it already has release notes and is ready to release' -> release_to_app_store; 'reject dotsu for iOS 1.4.8 and remove it from Ready for Release so we can submit a new build' -> run_asc_commands; 'attach the latest TestFlight to my-ios-app for iOS 1.4.4 and submit it for review' -> submit_release_for_review; 'prepare my-ios-app 1.4.3 with these release notes: ...' -> prepare_release_for_review; 'submit the prepared 1.4.3 build for review' -> submit_release_for_review; 'create an empty draft for 1.4.3' -> create_draft_release."
+  "Routing examples: 'release my-ios-app for iOS 1.4.3' -> release_to_app_store; 'it already has release notes and is ready to release' -> release_to_app_store; 'reject dotsu for iOS 1.4.8 and remove it from Ready for Release so we can submit a new build' -> run_asc_commands; 'attach the latest TestFlight to my-ios-app for iOS 1.4.4 and submit it for review' -> submit_release_for_review; 'attach the 1.4.8 (155) build to it and submit it for review, do not release it' -> submit_release_for_review with buildStrategy explicit_build_number and explicitBuildNumber 155; 'prepare my-ios-app 1.4.3 with these release notes: ...' -> prepare_release_for_review; 'submit the prepared 1.4.3 build for review' -> submit_release_for_review; 'create an empty draft for 1.4.3' -> create_draft_release."
 ];
 
 const DEFAULT_GENERIC_RELEASE_NOTES =
@@ -232,10 +232,6 @@ function inferActionTypeFromCommandText(
     return "cancel_review_submission";
   }
 
-  if (mentionsReleaseWithdrawal(normalized) && hasExplicitVersion) {
-    return "run_asc_commands";
-  }
-
   if (
     /\brelease status\b|\breview status\b|\bcurrent release\b|\blatest release\b|\blive version\b|\bcurrent version\b|\bstatus of\b.*\b(release|review|version)\b|リリース.*状況|審査.*状況|現在.*バージョン|ステータス/i.test(
       normalized
@@ -261,15 +257,6 @@ function inferActionTypeFromCommandText(
 
   if (
     hasExplicitVersion &&
-    mentionsCustomerReleaseIntent(normalized) &&
-    !mentionsReleaseNotes &&
-    !mentionsLocalization
-  ) {
-    return "release_to_app_store";
-  }
-
-  if (
-    hasExplicitVersion &&
     mentionsAttachBuild &&
     mentionsNewReleaseNotes &&
     !mentionsSubmitForReview &&
@@ -288,6 +275,21 @@ function inferActionTypeFromCommandText(
     !mentionsLocalization
   ) {
     return "submit_release_for_review";
+  }
+
+  if (mentionsReleaseWithdrawal(normalized) && hasExplicitVersion) {
+    return "run_asc_commands";
+  }
+
+  if (
+    hasExplicitVersion &&
+    mentionsCustomerReleaseIntent(normalized) &&
+    !mentionsSubmitForReview &&
+    !mentionsAttachBuild &&
+    !mentionsReleaseNotes &&
+    !mentionsLocalization
+  ) {
+    return "release_to_app_store";
   }
 
   if (
@@ -341,6 +343,45 @@ function extractVersionFromText(text: string): string | undefined {
   }
 
   return undefined;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function mentionsExplicitBuildId(text: string): boolean {
+  return /\b(?:asc\s+)?build\s+(?:id|identifier)\b|\bbuild-id\b/i.test(text);
+}
+
+function extractBuildNumberFromText(
+  text: string,
+  version?: string
+): string | undefined {
+  const normalized = text.trim();
+  if (normalized.length === 0 || mentionsExplicitBuildId(normalized)) {
+    return undefined;
+  }
+
+  if (version) {
+    const versionBuildMatch = normalized.match(
+      new RegExp(
+        `\\b${escapeRegExp(version)}\\s*\\(\\s*([a-zA-Z0-9][a-zA-Z0-9._-]*)\\s*\\)`,
+        "i"
+      )
+    );
+    const versionBuild = versionBuildMatch?.[1]?.trim();
+    if (versionBuild) {
+      return versionBuild;
+    }
+  }
+
+  const buildMatch = normalized.match(
+    /\bbuild\s+(?:number\s+)?#?\s*([0-9][a-zA-Z0-9._-]*)\b/i
+  );
+  const buildNumber = buildMatch?.[1]?.trim();
+  return buildNumber && !looksLikeVersionString(buildNumber)
+    ? buildNumber
+    : undefined;
 }
 
 function normalizeAppReference(value: string): string | undefined {
@@ -518,6 +559,7 @@ function normalizePlannerOutput(
       "version",
       "buildStrategy",
       "explicitBuildId",
+      "explicitBuildNumber",
       "releaseMode",
       "releaseNotes",
       "notes",
@@ -622,6 +664,35 @@ function normalizePlannerOutput(
     const extractedVersionFromCommand = extractVersionFromText(input.rawCommand);
     if (extractedVersionFromCommand) {
       record.version = extractedVersionFromCommand;
+    }
+  }
+
+  const extractedBuildNumber =
+    extractBuildNumberFromText(
+      input.latestUserMessage ?? "",
+      typeof record.version === "string" ? record.version : undefined
+    ) ??
+    extractBuildNumberFromText(
+      input.rawCommand,
+      typeof record.version === "string" ? record.version : undefined
+    );
+
+  if (extractedBuildNumber) {
+    const explicitBuildId =
+      typeof record.explicitBuildId === "string"
+        ? record.explicitBuildId.trim()
+        : undefined;
+    const shouldTreatAsBuildNumber =
+      record.buildStrategy !== "explicit_build_id" ||
+      !explicitBuildId ||
+      explicitBuildId === extractedBuildNumber;
+
+    if (shouldTreatAsBuildNumber) {
+      record.buildStrategy = "explicit_build_number";
+      record.explicitBuildNumber = extractedBuildNumber;
+      if (explicitBuildId === extractedBuildNumber) {
+        delete record.explicitBuildId;
+      }
     }
   }
 
@@ -767,7 +838,7 @@ export class OpenAiCommandPlanner {
             "Supported providers: apple, google-play.",
             "Supported actionType values: run_asc_commands, list_app_aliases, update_draft_release, create_draft_release, prepare_release_for_review, submit_release_for_review, release_to_app_store, cancel_review_submission, release_status.",
             "Supported releaseMode values: manual_after_review, automatic_on_approval.",
-            "Supported buildStrategy values: latest_for_version, explicit_build_id.",
+            "Supported buildStrategy values: latest_for_version, explicit_build_id, explicit_build_number.",
             "Infer commandLanguage as english, japanese, mixed, or unknown.",
             "If a required field is missing or the request is ambiguous, set needsClarification to true and include clarificationQuestion.",
             "Valid requests include read-only questions about ratings, reviews, analytics, crashes, feedback, finance, metadata, builds, and release status, not only release submissions.",
@@ -780,6 +851,7 @@ export class OpenAiCommandPlanner {
             "If the user only provides a bundle ID or package name, set appReference to that identifier string.",
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
             ...ACTION_ROUTING_GUIDE,
+            "When the user says 'build 155' or '1.2.3 (155)', treat 155 as a build number, not as an App Store Connect build ID.",
             "Use cancel_review_submission when the operator explicitly wants to cancel or withdraw an App Store review submission.",
             "Use run_asc_commands when the operator wants to reject, withdraw, hold, or remove a version from Ready for Release or Pending Developer Release so they can submit a new build. Never route those requests to release_to_app_store.",
             "If the operator wants to attach a TestFlight build and submit it for review, and does not provide new release-note source text, use submit_release_for_review, not prepare_release_for_review.",
@@ -850,7 +922,7 @@ export class OpenAiCommandPlanner {
             "Supported providers: apple, google-play.",
             "Supported actionType values: run_asc_commands, list_app_aliases, update_draft_release, create_draft_release, prepare_release_for_review, submit_release_for_review, release_to_app_store, cancel_review_submission, release_status.",
             "Supported releaseMode values: manual_after_review, automatic_on_approval.",
-            "Supported buildStrategy values: latest_for_version, explicit_build_id.",
+            "Supported buildStrategy values: latest_for_version, explicit_build_id, explicit_build_number.",
             "Valid requests include read-only questions about ratings, reviews, analytics, crashes, feedback, finance, metadata, builds, and release status, not only release submissions.",
             "Use list_app_aliases when the operator asks to list, show, or discover configured app aliases. This is a local configuration lookup, not an asc command.",
             "For list_app_aliases, infer provider as apple for iOS/App Store aliases and google-play for Android/Google Play aliases. Put any account/team/filter text in appReference; if there is no filter, set appReference to all.",
@@ -862,6 +934,7 @@ export class OpenAiCommandPlanner {
             "When a reply supplies one missing detail, combine it with the earlier request instead of re-asking for details already present in the conversation.",
             "When the user says 'version 1.2.3', 'v1.2.3', or 'version 1.2.3 on iOS', always put 1.2.3 in the version field.",
             ...ACTION_ROUTING_GUIDE,
+            "When the user says 'build 155' or '1.2.3 (155)', treat 155 as a build number, not as an App Store Connect build ID.",
             "Use cancel_review_submission when the operator explicitly wants to cancel or withdraw an App Store review submission.",
             "Use run_asc_commands when the operator wants to reject, withdraw, hold, or remove a version from Ready for Release or Pending Developer Release so they can submit a new build. Never route those requests to release_to_app_store.",
             "If the operator wants to attach a TestFlight build and submit it for review, and does not provide new release-note source text, use submit_release_for_review, not prepare_release_for_review.",

@@ -26,7 +26,8 @@ export type ReleaseMode = z.infer<typeof releaseModeSchema>;
 
 export const buildStrategySchema = z.enum([
   "latest_for_version",
-  "explicit_build_id"
+  "explicit_build_id",
+  "explicit_build_number"
 ]);
 export type BuildStrategy = z.infer<typeof buildStrategySchema>;
 
@@ -56,6 +57,7 @@ const plannerOutputObjectSchema = z.object({
   version: z.string().trim().min(1).optional(),
   buildStrategy: buildStrategySchema.default("latest_for_version"),
   explicitBuildId: z.string().trim().min(1).optional(),
+  explicitBuildNumber: z.string().trim().min(1).optional(),
   releaseMode: releaseModeSchema.default("manual_after_review"),
   releaseNotes: z.string().trim().min(1).max(4000).optional(),
   notes: z.string().trim().max(2000).optional(),
@@ -87,6 +89,18 @@ export const plannerOutputSchema = plannerOutputObjectSchema.superRefine(
         code: z.ZodIssueCode.custom,
         path: ["explicitBuildId"],
         message: "Explicit build ID is required when buildStrategy is explicit."
+      });
+    }
+
+    if (
+      value.buildStrategy === "explicit_build_number" &&
+      !value.explicitBuildNumber
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["explicitBuildNumber"],
+        message:
+          "Explicit build number is required when buildStrategy is explicit_build_number."
       });
     }
 
