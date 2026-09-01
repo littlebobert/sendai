@@ -1385,24 +1385,29 @@ async function ensureAppStoreVersion(input: {
 function summarizePrepareReleasePlan(input: {
   version: string;
   versionExists: boolean;
-  buildNumber: string;
-  buildId: string;
+  buildNumber?: string;
+  buildId?: string;
   locales: string[];
   dryRunValidated: boolean;
   buildAlreadyAttached: boolean;
+  validationPlanned: boolean;
 }): string[] {
   return [
     input.versionExists
       ? `Will update existing App Store version ${input.version}.`
       : `Will create App Store version ${input.version}.`,
-    input.buildAlreadyAttached
-      ? `Build ${input.buildNumber} (${input.buildId}) is already attached.`
-      : `Will attach build ${input.buildNumber} (${input.buildId}).`,
+    input.buildId && input.buildNumber
+      ? input.buildAlreadyAttached
+        ? `Build ${input.buildNumber} (${input.buildId}) is already attached.`
+        : `Will attach build ${input.buildNumber} (${input.buildId}).`
+      : "No build will be attached or changed.",
     `Will apply localized release notes for ${input.locales.length} locale(s): ${input.locales.join(", ")}.`,
     input.dryRunValidated
       ? "Localization dry-run succeeded."
       : "Localization dry-run will run during execution after the version exists.",
-    "Full App Store validation will run during execution after metadata upload and build attachment."
+    input.validationPlanned
+      ? "Full App Store validation will run during execution after metadata upload and build attachment."
+      : `App Store validation will be skipped because version ${input.version} has no build attached.`
   ];
 }
 
@@ -1617,6 +1622,19 @@ function requestsBuildAttachment(request: NormalizedActionRequest): boolean {
   );
 }
 
+// Draft release-note updates run against the App Store version metadata, so they
+// only need a TestFlight build when the operator asked to attach one. Review
+// submission always needs one because Apple rejects a version without a build.
+function requiresBuildForReleaseNotesUpdate(
+  request: NormalizedActionRequest
+): boolean {
+  return (
+    request.actionType !== "update_draft_release" ||
+    request.buildStrategy !== "latest_for_version" ||
+    requestsBuildAttachment(request)
+  );
+}
+
 function ensureWriteAction(
   request: NormalizedActionRequest,
   plan: ProviderExecutionPlan
@@ -1633,9 +1651,16 @@ function ensureWriteAction(
     return;
   }
 
+  if (request.actionType === "update_draft_release") {
+    if (requiresBuildForReleaseNotesUpdate(request) && !plan.buildId) {
+      throw new Error("This execution plan is not eligible for a write action.");
+    }
+
+    return;
+  }
+
   if (
     (request.actionType !== "submit_release_for_review" &&
-      request.actionType !== "update_draft_release" &&
       request.actionType !== "prepare_release_for_review") ||
     !plan.buildId
   ) {
@@ -1885,11 +1910,18 @@ export class AppleAscProvider implements ProviderAdapter {
         platform: input.platform
       });
     } else {
-      buildLookup = await this.readLatestBuildForVersion({
-        appId: input.appId,
-        version: input.version,
-        platform: input.platform
-      });
+      try {
+        buildLookup = await this.readLatestBuildForVersion({
+          appId: input.appId,
+          version: input.version,
+          platform: input.platform
+        });
+      } catch (error) {
+        throw new Error(
+          `Could not resolve the latest TestFlight build for version ${input.version} on ${formatPlatformLabel(input.platform)}. Upload or finish processing a build for ${input.version}, or ask for a release-note-only draft update that does not attach a build. Underlying asc failure: ${toErrorMessage(error)}`,
+          { cause: error }
+        );
+      }
     }
 
     const { buildId, buildNumber } = extractBuildDetails(buildLookup.json);
@@ -2490,13 +2522,16 @@ export class AppleAscProvider implements ProviderAdapter {
         );
       }
 
-      const selectedBuild = await this.resolveBuildForRequest({
-        appId: app.appId,
-        version,
-        platform: app.platform,
-        request
-      });
-      const { buildId, buildNumber } = selectedBuild;
+      const selectedBuild = requiresBuildForReleaseNotesUpdate(request)
+        ? await this.resolveBuildForRequest({
+            appId: app.appId,
+            version,
+            platform: app.platform,
+            request
+          })
+        : null;
+      const buildId = selectedBuild?.buildId;
+      const buildNumber = selectedBuild?.buildNumber;
 
       const { lookup: versionLookup, versionRecord } = await lookupAppStoreVersion({
         binaryPath: this.binaryPath,
@@ -2567,9 +2602,10 @@ export class AppleAscProvider implements ProviderAdapter {
         );
       }
 
+      const effectiveBuildId = buildId ?? attachedBuildId;
       const previewVersionId = versionRecord?.versionId ?? "<version-id-from-create>";
       const previewCommands = [
-        ...selectedBuild.previewCommands,
+        ...(selectedBuild?.previewCommands ?? []),
         versionLookup.displayCommand,
         appInfoLocalizationMetadata.displayCommand
       ];
@@ -2601,7 +2637,7 @@ export class AppleAscProvider implements ProviderAdapter {
           "upload"
         )
       );
-      if (!versionRecord || attachedBuildId !== buildId) {
+      if (buildId && (!versionRecord || attachedBuildId !== buildId)) {
         previewCommands.push(
           buildDisplayCommand(
             this.binaryPath,
@@ -2609,12 +2645,14 @@ export class AppleAscProvider implements ProviderAdapter {
           )
         );
       }
-      previewCommands.push(
-        buildDisplayCommand(
-          this.binaryPath,
-          buildValidateArgs(app.appId, previewVersionId, app.platform)
-        )
-      );
+      if (effectiveBuildId) {
+        previewCommands.push(
+          buildDisplayCommand(
+            this.binaryPath,
+            buildValidateArgs(app.appId, previewVersionId, app.platform)
+          )
+        );
+      }
       if (!updatesExistingDraft) {
         previewCommands.push(
           ...buildReviewSubmissionPreviewCommands(
@@ -2644,15 +2682,18 @@ export class AppleAscProvider implements ProviderAdapter {
           buildId,
           locales,
           dryRunValidated: Boolean(localizationsDryRun),
-          buildAlreadyAttached: attachedBuildId === buildId
+          buildAlreadyAttached: Boolean(buildId) && attachedBuildId === buildId,
+          validationPlanned: Boolean(effectiveBuildId)
         }),
         executionSummary: versionRecord
           ? updatesExistingDraft
-            ? `Prepared draft update for existing version ${version} build ${buildNumber} across ${locales.length} locale(s).`
+            ? buildNumber
+              ? `Prepared draft update for existing version ${version} build ${buildNumber} across ${locales.length} locale(s).`
+              : `Prepared release-note update for existing draft version ${version} across ${locales.length} locale(s).`
             : `Prepared release workflow for existing version ${version} build ${buildNumber} across ${locales.length} locale(s).`
           : `Prepared release workflow to create version ${version} with build ${buildNumber} across ${locales.length} locale(s).`,
         rawProviderData: {
-          ...selectedBuild.rawProviderData,
+          ...(selectedBuild?.rawProviderData ?? {}),
           versionLookup: versionLookup.json,
           versionId: versionRecord?.versionId,
           versionState: versionRecord?.appStoreState,
@@ -2996,11 +3037,7 @@ export class AppleAscProvider implements ProviderAdapter {
     }
 
     ensureWriteAction(context.request, context.plan);
-    const buildId = context.plan.buildId;
-
-    if (!buildId) {
-      throw new Error("Execution plan is missing a build ID.");
-    }
+    const planBuildId = context.plan.buildId;
 
     if (
       context.request.actionType === "prepare_release_for_review" ||
@@ -3008,6 +3045,9 @@ export class AppleAscProvider implements ProviderAdapter {
     ) {
       const updatesExistingDraft =
         context.request.actionType === "update_draft_release";
+      if (!planBuildId && !updatesExistingDraft) {
+        throw new Error("Execution plan is missing a build ID.");
+      }
       const localizedReleaseNotes = extractLocalizedReleaseNotesFromPlan(
         context.plan
       );
@@ -3056,18 +3096,21 @@ export class AppleAscProvider implements ProviderAdapter {
         }
       );
       let attachBuild: AscCommandResult | null = null;
-      if (attachedBuildId !== buildId) {
+      if (planBuildId && attachedBuildId !== planBuildId) {
         attachBuild = await readProcessOutput(
           this.binaryPath,
-          buildAttachBuildArgs(versionId, buildId),
+          buildAttachBuildArgs(versionId, planBuildId),
           this.env
         );
       }
-      const validation = await readProcessOutput(
-        this.binaryPath,
-        buildValidateArgs(context.app.appId, versionId, context.app.platform),
-        this.env
-      );
+      const effectiveBuildId = planBuildId ?? attachedBuildId;
+      const validation = effectiveBuildId
+        ? await readProcessOutput(
+            this.binaryPath,
+            buildValidateArgs(context.app.appId, versionId, context.app.platform),
+            this.env
+          )
+        : null;
       const submit = updatesExistingDraft
         ? null
         : await submitVersionForReview({
@@ -3078,11 +3121,19 @@ export class AppleAscProvider implements ProviderAdapter {
             env: this.env
           });
 
+      const performedSteps = [
+        `localized the release notes across ${Object.keys(localizedReleaseNotes).length} locale(s)`,
+        ...(attachBuild
+          ? [`attached build ${context.plan.buildNumber ?? planBuildId}`]
+          : []),
+        ...(validation ? ["validated it"] : [])
+      ];
+
       return providerExecutionResultSchema.parse({
         ok: true,
         summary: updatesExistingDraft
-          ? `Updated draft version ${version}, localized the release notes, attached build ${context.plan.buildNumber ?? buildId}, and validated it.`
-          : `Created or updated version ${version}, localized the release notes, attached build ${context.plan.buildNumber ?? buildId}, validated it, and submitted it for App Store review.`,
+          ? `Updated draft version ${version}: ${performedSteps.join(", ")}.`
+          : `Created or updated version ${version}: ${performedSteps.join(", ")}, and submitted it for App Store review.`,
         rawResult: {
           versionLookup: ensuredVersion.lookup.json,
           versionCreate: ensuredVersion.create?.json,
@@ -3090,7 +3141,7 @@ export class AppleAscProvider implements ProviderAdapter {
           localizationsDryRun: localizationResults.dryRun.json,
           localizationsUpload: localizationResults.upload.json,
           attachBuild: attachBuild?.json,
-          validation: validation.json,
+          validation: validation?.json,
           submit: submit
             ? {
                 submissionCreate: submit.submissionCreate.json,
@@ -3100,6 +3151,10 @@ export class AppleAscProvider implements ProviderAdapter {
             : null
         }
       });
+    }
+
+    if (!planBuildId) {
+      throw new Error("Execution plan is missing a build ID.");
     }
 
     const versionLookup = await lookupAppStoreVersion({
@@ -3128,10 +3183,10 @@ export class AppleAscProvider implements ProviderAdapter {
         this.env
       );
       const attachedBuildId = extractAttachedBuildId(versionDetails.json);
-      if (attachedBuildId !== buildId) {
+      if (attachedBuildId !== planBuildId) {
         attachBuild = await readProcessOutput(
           this.binaryPath,
-          buildAttachBuildArgs(resolvedVersion.versionId, buildId),
+          buildAttachBuildArgs(resolvedVersion.versionId, planBuildId),
           this.env
         );
       }
@@ -3157,7 +3212,7 @@ export class AppleAscProvider implements ProviderAdapter {
     return providerExecutionResultSchema.parse({
       ok: true,
       summary: attachBuild
-        ? `Attached build ${context.plan.buildNumber ?? buildId} to version ${version} and submitted it to App Store review without changing release notes.`
+        ? `Attached build ${context.plan.buildNumber ?? planBuildId} to version ${version} and submitted it to App Store review without changing release notes.`
         : `Submitted version ${version} build ${context.plan.buildNumber ?? context.plan.buildId} to App Store review without changing release notes.`,
       rawResult: {
         versionLookup: versionLookup.lookup.json,

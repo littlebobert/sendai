@@ -75,14 +75,14 @@ export interface OpenAiConversationTurnResult {
 const ACTION_ROUTING_GUIDE = [
   "Action routing catalog:",
   "release_to_app_store = final customer publish only. It moves an already prepared and approved App Store version from Pending Developer Release to live on the App Store. It does not create/update metadata, upload release notes, attach builds, validate, or submit for review. Use this for phrasing like 'release my-ios-app for iOS 1.4.3', 'go live', 'ready to release', 'approved', 'already has release notes', 'metadata is ready', or 'pending developer release'. Never ask for release notes for this action. Never use this when the operator wants to attach a build, submit for review, reject, withdraw, hold, remove from Ready for Release, or stop an approved version from shipping.",
-  "prepare_release_for_review = pre-review preparation. It creates or updates an App Store version, uploads actual source release-note text, localizes metadata, attaches a TestFlight build, validates, and submits for App Store review. Use this only when the operator provides actual release-note source text or explicitly asks for generic release notes. Statements like 'release notes already exist' are not release-note text.",
-  "update_draft_release = update an existing draft without submitting for review. Use when the operator wants to attach a build or upload actual release-note text to a draft version.",
+  "prepare_release_for_review = pre-review preparation. It creates or updates an App Store version, uploads actual source release-note text, localizes metadata, attaches a TestFlight build, validates, and submits for App Store review. Use this only when the operator provides actual release-note source text or explicitly asks for generic release notes, and also asks to prepare, create, or submit the release for review. Statements like 'release notes already exist' are not release-note text.",
+  "update_draft_release = update an existing draft without submitting for review. Use when the operator wants to attach a build or upload actual release-note text to a draft version, including requests that only add or translate release notes. This action requires a TestFlight build only when the operator asks to attach one.",
   "create_draft_release = create an empty draft version only. Use when the operator explicitly asks for a draft/empty version without release notes, build attachment, validation, or review submission.",
   "submit_release_for_review = submit an existing App Store version to Apple review. Use when the operator asks to submit for review without providing new release-note source text, including requests to attach the latest TestFlight build and submit. Do not upload release notes for this action. Build numbers such as 'build 155' or '1.4.8 (155)' are not App Store Connect build IDs; use buildStrategy explicit_build_number with explicitBuildNumber for those.",
   "release_status = read-only status lookup. Use for questions about current/live/latest/review/release status.",
   "list_app_aliases = local alias lookup. Use for listing or discovering configured app aliases.",
   "run_asc_commands = other App Store Connect workflows and read-only queries that do not fit the named actions, including rejecting or removing a version from Ready for Release so a new build can be submitted, attaching a TestFlight build without submitting it when no new release-note source text is provided, and holding back an approved release.",
-  "Routing examples: 'release my-ios-app for iOS 1.4.3' -> release_to_app_store; 'it already has release notes and is ready to release' -> release_to_app_store; 'reject dotsu for iOS 1.4.8 and remove it from Ready for Release so we can submit a new build' -> run_asc_commands; 'attach the latest TestFlight to my-ios-app for iOS 1.4.4 and submit it for review' -> submit_release_for_review; 'attach the 1.4.8 (155) build to it and submit it for review, do not release it' -> submit_release_for_review with buildStrategy explicit_build_number and explicitBuildNumber 155; 'prepare my-ios-app 1.4.3 with these release notes: ...' -> prepare_release_for_review; 'submit the prepared 1.4.3 build for review' -> submit_release_for_review; 'create an empty draft for 1.4.3' -> create_draft_release."
+  "Routing examples: 'release my-ios-app for iOS 1.4.3' -> release_to_app_store; 'it already has release notes and is ready to release' -> release_to_app_store; 'reject dotsu for iOS 1.4.8 and remove it from Ready for Release so we can submit a new build' -> run_asc_commands; 'attach the latest TestFlight to my-ios-app for iOS 1.4.4 and submit it for review' -> submit_release_for_review; 'attach the 1.4.8 (155) build to it and submit it for review, do not release it' -> submit_release_for_review with buildStrategy explicit_build_number and explicitBuildNumber 155; 'prepare my-ios-app 1.4.3 with these release notes: ...' -> prepare_release_for_review; 'add release notes to my-ios-app for iOS 1.4.3 and translate them into all the required languages: ...' -> update_draft_release; 'submit the prepared 1.4.3 build for review' -> submit_release_for_review; 'create an empty draft for 1.4.3' -> create_draft_release."
 ];
 
 const DEFAULT_GENERIC_RELEASE_NOTES =
@@ -258,18 +258,6 @@ function inferActionTypeFromCommandText(
   if (
     hasExplicitVersion &&
     mentionsAttachBuild &&
-    mentionsNewReleaseNotes &&
-    !mentionsSubmitForReview &&
-    /\bdraft\b|\bfill(?:\s+it)?\s+in\b|\bupdate\b|\buse\s+the\s+draft\b/i.test(
-      normalized
-    )
-  ) {
-    return "update_draft_release";
-  }
-
-  if (
-    hasExplicitVersion &&
-    mentionsAttachBuild &&
     mentionsSubmitForReview &&
     !mentionsNewReleaseNotes &&
     !mentionsLocalization
@@ -279,6 +267,15 @@ function inferActionTypeFromCommandText(
 
   if (mentionsReleaseWithdrawal(normalized) && hasExplicitVersion) {
     return "run_asc_commands";
+  }
+
+  if (
+    hasExplicitVersion &&
+    (mentionsNewReleaseNotes || mentionsLocalization) &&
+    !mentionsSubmitForReview &&
+    !mentionsCreateOrPrepare
+  ) {
+    return "update_draft_release";
   }
 
   if (
