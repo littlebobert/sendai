@@ -1074,16 +1074,17 @@ function buildLocalizationsListArgs(input: {
 function buildLocalizationsUploadArgs(
   versionId: string,
   inputPath: string,
-  mode: "dry-run" | "upload"
+  mode: "dry-run" | "upload",
+  locale: string
 ): string[] {
   const args = [
     "localizations",
     "upload",
     "--version",
-    versionId,
-    "--path",
-    inputPath
+    versionId
   ];
+  args.push("--locale", locale);
+  args.push("--path", inputPath);
   if (mode === "dry-run") {
     args.push("--dry-run");
   }
@@ -1100,8 +1101,9 @@ function buildLocalizationsUploadDisplayCommand(
     binaryPath,
     buildLocalizationsUploadArgs(
       versionId,
-      "<generated-localizations-dir>",
-      mode
+      "<generated-locale>.strings",
+      mode,
+      "<locale>"
     )
   );
 }
@@ -1263,6 +1265,49 @@ async function withLocalizationStringsDir<T>(
   } finally {
     await rm(localizationsDir, { recursive: true, force: true });
   }
+}
+
+async function processLocalizedReleaseNotes(input: {
+  binaryPath: string;
+  versionId: string;
+  localizedReleaseNotes: LocalizedReleaseNotes;
+  env: NodeJS.ProcessEnv;
+  mode: "dry-run" | "upload";
+}): Promise<{
+  dryRuns: Record<string, Record<string, unknown>>;
+  uploads: Record<string, Record<string, unknown>>;
+}> {
+  return withLocalizationStringsDir(
+    input.localizedReleaseNotes,
+    async (localizationsDir) => {
+      const dryRuns: Record<string, Record<string, unknown>> = {};
+      const uploads: Record<string, Record<string, unknown>> = {};
+
+      const locales = Object.keys(input.localizedReleaseNotes).sort();
+      const modes: Array<"dry-run" | "upload"> =
+        input.mode === "dry-run" ? ["dry-run"] : ["dry-run", "upload"];
+
+      // Validate every locale before any upload can mutate App Store Connect.
+      for (const mode of modes) {
+        for (const locale of locales) {
+          const result = await readProcessOutput(
+            input.binaryPath,
+            buildLocalizationsUploadArgs(
+              input.versionId,
+              join(localizationsDir, `${locale}.strings`),
+              mode,
+              locale
+            ),
+            input.env
+          );
+          const results = mode === "dry-run" ? dryRuns : uploads;
+          results[locale] = result.json;
+        }
+      }
+
+      return { dryRuns, uploads };
+    }
+  );
 }
 
 async function lookupAppStoreVersion(input: {
@@ -2578,7 +2623,7 @@ export class AppleAscProvider implements ProviderAdapter {
 
       let versionDetails: AscCommandResult | null = null;
       let attachedBuildId: string | null = null;
-      let localizationsDryRun: AscCommandResult | null = null;
+      let localizationsDryRun: Record<string, Record<string, unknown>> | null = null;
 
       if (versionRecord) {
         versionDetails = await readVersionDetailsOutput(
@@ -2587,19 +2632,15 @@ export class AppleAscProvider implements ProviderAdapter {
           this.env
         );
         attachedBuildId = extractAttachedBuildId(versionDetails.json);
-        localizationsDryRun = await withLocalizationStringsDir(
-          localizedReleaseNotes,
-          async (localizationsDir) =>
-            readProcessOutput(
-              this.binaryPath,
-              buildLocalizationsUploadArgs(
-                versionRecord.versionId,
-                localizationsDir,
-                "dry-run"
-              ),
-              this.env
-            )
-        );
+        localizationsDryRun = (
+          await processLocalizedReleaseNotes({
+            binaryPath: this.binaryPath,
+            versionId: versionRecord.versionId,
+            localizedReleaseNotes,
+            env: this.env,
+            mode: "dry-run"
+          })
+        ).dryRuns;
       }
 
       const effectiveBuildId = buildId ?? attachedBuildId;
@@ -2700,7 +2741,7 @@ export class AppleAscProvider implements ProviderAdapter {
           versionDetails: versionDetails?.json,
           appInfoLocalizationMetadata: appInfoLocalizationMetadata.json,
           versionLocalizationMetadata: versionLocalizationMetadata?.json,
-          localizationsDryRun: localizationsDryRun?.json,
+          localizationsDryRun: localizationsDryRun ?? undefined,
           attachedBuildId,
           localizedReleaseNotes,
           locales,
@@ -3078,23 +3119,13 @@ export class AppleAscProvider implements ProviderAdapter {
         this.env
       );
       const attachedBuildId = extractAttachedBuildId(versionDetails.json);
-      const localizationResults = await withLocalizationStringsDir(
+      const localizationResults = await processLocalizedReleaseNotes({
+        binaryPath: this.binaryPath,
+        versionId,
         localizedReleaseNotes,
-        async (localizationsDir) => {
-          const dryRun = await readProcessOutput(
-            this.binaryPath,
-            buildLocalizationsUploadArgs(versionId, localizationsDir, "dry-run"),
-            this.env
-          );
-          const upload = await readProcessOutput(
-            this.binaryPath,
-            buildLocalizationsUploadArgs(versionId, localizationsDir, "upload"),
-            this.env
-          );
-
-          return { dryRun, upload };
-        }
-      );
+        env: this.env,
+        mode: "upload"
+      });
       let attachBuild: AscCommandResult | null = null;
       if (planBuildId && attachedBuildId !== planBuildId) {
         attachBuild = await readProcessOutput(
@@ -3138,8 +3169,8 @@ export class AppleAscProvider implements ProviderAdapter {
           versionLookup: ensuredVersion.lookup.json,
           versionCreate: ensuredVersion.create?.json,
           versionDetails: versionDetails.json,
-          localizationsDryRun: localizationResults.dryRun.json,
-          localizationsUpload: localizationResults.upload.json,
+          localizationsDryRun: localizationResults.dryRuns,
+          localizationsUpload: localizationResults.uploads,
           attachBuild: attachBuild?.json,
           validation: validation?.json,
           submit: submit
