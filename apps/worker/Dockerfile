@@ -22,9 +22,10 @@ WORKDIR /app
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl libbrotli1 \
-  && rm -rf /var/lib/apt/lists/* \
   && corepack enable \
-  && curl -fsSL https://asccli.sh/install | bash
+  && curl -fsSL https://asccli.sh/install | bash \
+  && apt-get purge -y --auto-remove curl \
+  && rm -rf /var/lib/apt/lists/*
 
 RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
