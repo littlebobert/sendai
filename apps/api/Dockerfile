@@ -26,6 +26,8 @@ RUN apt-get update \
   && corepack enable \
   && curl -fsSL https://asccli.sh/install | bash
 
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+
 ENV PATH="/root/.local/bin:${PATH}"
 
 COPY --from=build /app /app
