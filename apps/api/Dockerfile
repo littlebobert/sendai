@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim AS build
+FROM node:22.23.4-bookworm-slim AS build
 
 WORKDIR /app
 
@@ -16,12 +16,12 @@ COPY . .
 
 RUN pnpm build
 
-FROM node:22-bookworm-slim AS runtime
+FROM node:22.23.4-bookworm-slim AS runtime
 
 WORKDIR /app
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl \
+  && apt-get install -y --no-install-recommends ca-certificates curl libbrotli1 \
   && rm -rf /var/lib/apt/lists/* \
   && corepack enable \
   && curl -fsSL https://asccli.sh/install | bash
